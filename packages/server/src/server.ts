@@ -21,6 +21,7 @@ import {
   cleanHouseRules,
   cleanName,
   cleanTurnSeconds,
+  isVoiceSignal,
   parseClientMessage,
   type ClientMessage,
   type ErrorCode,
@@ -322,6 +323,26 @@ export function createServer(opts: ServerOptions = {}) {
       case 'typing': {
         const seat = room.seats.find((s) => s.id === actingAs());
         room.postTyping(actingAs(), seat?.name ?? 'spectator', msg.typing === true);
+        return;
+      }
+
+      /*
+       * Voice signalling. The server relays, it does not participate.
+       *
+       * Spectators are excluded deliberately: they are strangers with a room
+       * code, and letting one open a microphone into the table is not a
+       * feature anybody asked for.
+       */
+      case 'voice': {
+        if (ws.data.spectator) return;
+        if (!isVoiceSignal(msg.signal)) return fail(ws, 'bad_message', 'Malformed voice signal.');
+        room.postVoiceSignal(actingAs(), msg.signal);
+        return;
+      }
+
+      case 'voiceState': {
+        if (ws.data.spectator) return;
+        room.setVoiceState(actingAs(), msg.joined === true, msg.muted === true);
         return;
       }
 

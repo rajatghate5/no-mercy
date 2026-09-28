@@ -9,8 +9,13 @@
  * a line of game logic.
  */
 
-import { Vector3 } from 'three';
-import { COLORS, type Color, type GameOverReason, type RedactedState } from '@mercy/engine';
+import {
+  COLORS,
+  playableFor,
+  type Color,
+  type GameOverReason,
+  type RedactedState,
+} from '@mercy/engine';
 import type { Difficulty } from '@mercy/bots';
 import { LocalGame } from './game/local.js';
 import { NetworkGame } from './game/network.js';
@@ -23,15 +28,9 @@ import { warmCardArt } from './scene/cardArt.js';
 import { AttractScene } from './scene/attract.js';
 import { createStage, webglAvailable } from './scene/table.js';
 import { TableView } from './scene/tableView.js';
-import {
-  seatAngle,
-  seatPosition,
-  seatSqueeze,
-  handDepth,
-  visibleWidthAtHand,
-} from './scene/layout.js';
-import { TABLE_RADIUS } from './scene/table.js';
-import { Hud, Screens, type MenuChoice } from './ui/screens.js';
+import { handDepth, visibleWidthAtHand } from './scene/layout.js';
+import { VoiceChat } from './game/voice.js';
+import { Hud, Screens, type MenuChoice, type VoiceView } from './ui/screens.js';
 
 // Where the multiplayer server lives, and whether one is reachable at all.
 const { url: SERVER_URL, multiplayer: MULTIPLAYER_AVAILABLE } = resolveServer({
@@ -103,6 +102,8 @@ let unsubscribe: (() => void) | null = null;
 let botTimer: number | null = null;
 let unoTimer: number | null = null;
 let gameMeta: { difficulty: string; startedAt: number; bots: number } | null = null;
+let voice: VoiceChat | null = null;
+let unbindKeys: (() => void) | null = null;
 let recorded = false;
 
 const defaultName = localStorage.getItem('uno:name') || 'player';
@@ -133,63 +134,10 @@ function frame(now: number) {
     else attract.stop();
   }
   attract.update(dt, window.innerWidth / window.innerHeight);
-  positionSeats();
   stage.renderer.render(stage.scene, stage.camera);
   requestAnimationFrame(frame);
 }
 
-/** Project each 3D seat to screen space so its HTML label tracks it. */
-function positionSeats() {
-  const state = game?.view();
-  if (!state || !hud) return;
-  const viewerIndex = Math.max(
-    0,
-    state.players.findIndex((p) => p.id === state.viewer),
-  );
-  hud.seats(
-    state,
-    (i, size) => {
-      const angle = seatAngle(i, viewerIndex, state.players.length);
-      const aspect = window.innerWidth / window.innerHeight;
-      const [x, z] = seatPosition(angle, TABLE_RADIUS - 0.25, seatSqueeze(aspect));
-      // Viewer's own seat would sit under the hand; hide it.
-      if (i === viewerIndex) return null;
-      const portrait = window.innerWidth < window.innerHeight;
-      /*
-       * Floated above the felt so the chip sits CLEAR of that seat's fan
-       * rather than across the middle of their cards.
-       *
-       * Portrait needs much more lift than landscape. On a phone the side
-       * seats and their fans project to nearly the same screen height, so at
-       * the old 1.25 the name and the card count were printed straight over
-       * the opponent's hand. Raising the anchor moves the label up the screen
-       * without moving the seat.
-       */
-      const p = new Vector3(x, portrait ? 2.9 : 1.7, z).project(stage.camera);
-
-      // Clamp by the label's MEASURED half-width, not a guessed constant.
-      // Labels are translate(-50%,-50%) centred, so a fixed pad let wider
-      // chips hang off the edge on a tablet while looking fine on a phone.
-      const padX = size.width / 2 + 6;
-      const padY = size.height / 2 + 4;
-      // Measured from the live HUD rather than assumed, so a wrapped prompt
-      // pushes the labels down with it instead of being covered by them.
-      const topFloor = (hud?.topReserved() ?? (portrait ? 150 : 128)) + padY;
-
-      return {
-        x: clamp(((p.x + 1) / 2) * window.innerWidth, padX, window.innerWidth - padX),
-        y: clamp(
-          ((-p.y + 1) / 2) * window.innerHeight,
-          topFloor,
-          window.innerHeight - (portrait ? 300 : 260),
-        ),
-      };
-    },
-    state.rules.handLimit,
-  );
-}
-
-const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
 /**
  * Measure how much world-width the hand may occupy, from the LIVE camera.
@@ -217,10 +165,11 @@ function handWidthBudget(): number {
 /**
  * How long a bot "thinks" before acting in a solo game.
  *
- * Long enough for the previous card's animation to land, so the table is
- * readable rather than a blur of cards.
+ * Has to outlast PLAY_MS (1100ms) or the next bot throws while the last card
+ * is still in the air, and the table reads as a blur however slow each
+ * individual throw is.
  */
-const BOT_DELAY_MS = 1000;
+const BOT_DELAY_MS = 1250;
 
 /**
  * How long the bots hold off before pouncing on a missed UNO.
@@ -300,6 +249,10 @@ function scheduleBotTurn() {
 function detach() {
   unsubscribe?.();
   unsubscribe = null;
+  unbindKeys?.();
+  unbindKeys = null;
+  voice?.leave();
+  voice = null;
   hud?.destroy();
   hud = null;
   game = null;
@@ -337,11 +290,53 @@ function attach(g: PlayableGame) {
     },
     { label: 'Leave', onClick: toMenu },
   ]);
+  /*
+   * Chat is a networked-only feature: a solo game has nobody to talk to, and
+   * a ticker with only your own voice in it is furniture.
+   */
   if (g.say) {
+    const net = g instanceof NetworkGame ? g : null;
+
+    if (net && VoiceChat.supported) {
+      voice = new VoiceChat({
+        youId: g.youId,
+        signal: (sig) => net.sendVoiceSignal(sig),
+        announce: (joined, muted) => net.announceVoice(joined, muted),
+        onChange: () => refreshVoice(),
+      });
+      net.onVoiceSignal = (from, sig) => void voice?.onSignal(from, sig);
+      net.onVoiceRoster = (players) => voice?.setRoster(players);
+    }
+
     hud.enableChat(
       (text) => g.say?.(text),
       (typing) => g.setTyping?.(typing),
+      voice
+        ? {
+            available: true,
+            /*
+             * The microphone is not opened until the first press.
+             *
+             * Asking for permission the moment a game starts gets refused by
+             * habit; asking the first time somebody actually holds V is a
+             * request with a reason attached.
+             */
+            onTalk: (on) => {
+              if (!voice) return;
+              if (on && !voice.joined) {
+                void voice.join().then((ok) => ok && voice?.setTalking(true));
+                return;
+              }
+              voice.setTalking(on);
+            },
+            onToggleMute: () => {
+              if (!voice?.joined) return;
+              voice.setMuted(!voice.muted);
+            },
+          }
+        : undefined,
     );
+    unbindKeys = hud.bindKeys();
   }
   unsubscribe = g.subscribe(onStateChange);
   onStateChange();
@@ -371,6 +366,28 @@ function onStateChange() {
   scheduleUnoReaction();
 }
 
+/** Microphone state per seat, or an empty map when voice is not running. */
+function voiceView(): VoiceView | undefined {
+  if (!voice) return undefined;
+  return voice.states() as VoiceView;
+}
+
+/**
+ * Redraw only what voice touches.
+ *
+ * Levels are sampled about nine times a second, and running the whole HUD
+ * refresh at that rate would rebuild the log, the chips and every prompt
+ * button nine times a second along with them.
+ */
+function refreshVoice() {
+  const state = game?.view();
+  if (!state || !hud) return;
+  hud.rail(state, voiceView());
+  hud.micState(voice?.selfState() ?? 'none');
+  // The mesh only calls seats that are actually at the table.
+  voice?.setSeats(state.players.filter((p) => !p.isBot).map((p) => p.id));
+}
+
 function cueSounds(g: PlayableGame) {
   for (const e of g.lastEvents) {
     if (e.type === 'cardPlayed') sound.play('play');
@@ -387,6 +404,7 @@ function refreshHud() {
   if (!g || !state || !hud) return;
 
   hud.chips(state);
+  hud.rail(state, voiceView());
   hud.log(g.log);
   if (g.chat) {
     hud.chat(g.chat);
@@ -483,6 +501,40 @@ function refreshHud() {
     });
   }
 
+  /*
+   * A live draw stack is a DECISION, not a turn.
+   *
+   * It used to render as an ordinary turn: the prompt said "click a card to
+   * play it" while the stack rules made almost every card in your hand
+   * illegal, the penalty was a chip in the top strip fourth in a row of
+   * chips, and clicking a card did nothing at all - no shake, no sound, no
+   * line in the log. The rule was being enforced perfectly and the interface
+   * never said so, which reads as a broken game rather than a punishment.
+   *
+   * So it moves to the middle of the screen on the same plate the colour
+   * picker uses, names who hit you, and says what it costs.
+   */
+  if (state.pendingDraw > 0) {
+    const stackers = playableFor(state);
+    const hitBy = state.players.find((p) => p.id === lastAggressor(g, state));
+    const who = hitBy && hitBy.id !== g.youId ? hitBy.name : 'Someone';
+    return hud.prompt({
+      kind: 'decision',
+      tone: 'danger',
+      label: `${who} hit you with +${state.pendingDraw}`,
+      sub:
+        stackers.length > 0
+          ? `Play a +${state.stackValue} or bigger to pass it on — or take it.`
+          : `Nothing in your hand is a +${state.stackValue} or bigger. You have to eat it.`,
+      buttons: [
+        {
+          label: `Take ${state.pendingDraw} cards`,
+          onClick: () => g.apply({ type: 'takeStack', player: g.youId }),
+        },
+      ],
+    });
+  }
+
   const narrow = window.innerWidth < 560;
   hud.prompt({
     label: narrow
@@ -492,16 +544,26 @@ function refreshHud() {
       : 'Your turn — click a card to play it',
     buttons: [
       {
-        label: state.pendingDraw > 0 ? `Take +${state.pendingDraw}` : 'Draw a card',
-        onClick: () =>
-          g.apply(
-            state.pendingDraw > 0
-              ? { type: 'takeStack', player: g.youId }
-              : { type: 'draw', player: g.youId },
-          ),
+        label: 'Draw a card',
+        onClick: () => g.apply({ type: 'draw', player: g.youId }),
       },
     ],
   });
+}
+
+/**
+ * Who played the card that is currently sitting on top of the stack.
+ *
+ * Read from the event stream rather than inferred from seat order: with a
+ * Skip Everyone or a reversal in the mix, "the player before you" is not
+ * reliably the player who hit you.
+ */
+function lastAggressor(g: PlayableGame, state: RedactedState): string | null {
+  for (let i = g.lastEvents.length - 1; i >= 0; i--) {
+    const e = g.lastEvents[i]!;
+    if (e.type === 'cardPlayed' && e.card.id === state.discardTop?.id) return e.player;
+  }
+  return null;
 }
 
 /**

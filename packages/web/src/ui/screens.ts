@@ -23,12 +23,28 @@ import type { LogEntry } from '../game/narrate.js';
 import type { Stats } from '../game/store.js';
 import { clear, el } from './dom.js';
 
+/** How long a chat line stays at full strength before it fades out. */
+const TICKER_LIFE_MS = 12000;
+/** Lines kept on screen at once. Older ones drop off the top. */
+const TICKER_LINES = 4;
+
 const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
 const BLURB: Record<Difficulty, string> = {
   easy: 'Plays a random legal card. Good for learning the rules.',
   medium: 'Holds its draw cards for defence and steers toward its best colour.',
   hard: 'Counts the deck, tracks what you are void in, and targets whoever is closest to going out.',
 };
+
+/**
+ * Per-player microphone state, as the rail draws it.
+ *
+ *   none  - not in voice at all (a bot, or somebody who never joined)
+ *   on    - connected and quiet
+ *   muted - connected, microphone closed
+ *   live  - talking right now
+ */
+export type VoiceState = 'none' | 'on' | 'muted' | 'live';
+export type VoiceView = Record<string, VoiceState>;
 
 export type MenuChoice =
   | { kind: 'solo'; bots: number; difficulty: Difficulty }
@@ -890,19 +906,21 @@ function escapeHtml(s: string): string {
 
 /** The persistent in-game overlay: seats, chips, log, prompt, chat. */
 export class Hud {
-  private seatNodes = new Map<string, HTMLElement>();
   readonly root: HTMLElement;
   private topbar: HTMLElement;
   private logBox: HTMLElement;
   private promptBox: HTMLElement;
   private cornerBox: HTMLElement;
   private unoBox: HTMLElement;
+  private railBox: HTMLElement | null = null;
+  private railRows = new Map<string, HTMLElement>();
   private chatBox: HTMLElement | null = null;
-  private chatTab: HTMLElement | null = null;
+  private talking = false;
+  private pushToTalk: ((on: boolean) => void) | null = null;
+  private toggleMute: (() => void) | null = null;
   private scrollBox: HTMLElement | null = null;
   private chatInput: HTMLInputElement | null = null;
-  /** Unread bookkeeping, so a closed drawer still says something arrived. */
-  private chatCount = 0;
+  /** How many messages have already been drawn, so lines append once. */
   private chatSeen = 0;
 
   constructor(parent: HTMLElement) {
@@ -945,55 +963,79 @@ export class Hud {
     return Math.max(this.topbar.getBoundingClientRect().bottom, promptBottom) + 10;
   }
 
-  /** Reposition seat labels to follow their 3D seats. */
-  seats(
-    state: RedactedState,
-    project: (
-      index: number,
-      size: { width: number; height: number },
-    ) => { x: number; y: number } | null,
-    limit: number,
-  ): void {
-    const seen = new Set<string>();
-    state.players.forEach((p, i) => {
-      seen.add(p.id);
-      let node = this.seatNodes.get(p.id);
-      if (!node) {
-        node = el('div', { class: 'seat' }, [
-          el('div', { class: 'name' }),
-          el('div', { class: 'count' }),
-        ]);
-        this.seatNodes.set(p.id, node);
-        this.root.append(node);
-      }
-      // Measured before positioning, so the caller can clamp by real size.
-      const box = node.getBoundingClientRect();
-      const screen = project(i, { width: box.width || 96, height: box.height || 44 });
-      if (!screen) {
-        node.style.display = 'none';
-        return;
-      }
-      node.style.display = '';
-      node.style.left = `${screen.x}px`;
-      node.style.top = `${screen.y}px`;
+  /**
+   * The turn order rail.
+   *
+   * Replaces four names floating on the felt at their 3D seats. Those had no
+   * reading order, drifted with the camera and collided with the fans - and
+   * the ONE state worth showing, whose turn it is, was invisible: the
+   * highlight painted the name `var(--accent)`, which after the palette pass
+   * is bone, and the idle colour `var(--ink)` is ALSO bone. Every seat
+   * computed to the same rgb(233,227,213).
+   *
+   * So the marker is rebuilt out of channels that cannot collide with a suit
+   * colour: idle rows drop to 42%, the active row goes to full white-bone,
+   * gains a caret and a rule down its edge. Brightness and position, no hue.
+   *
+   * Listed in turn order from the viewer, so reading down the rail is reading
+   * the order play will actually arrive in.
+   */
+  rail(state: RedactedState, voice?: VoiceView): void {
+    if (!this.railBox) {
+      this.railBox = el('div', { class: 'rail' }, [
+        el('div', { class: 'rail-head', text: 'Turn order' }),
+      ]);
+      this.root.append(this.railBox);
+    }
 
-      const out = p.eliminated || p.finished;
-      node.dataset.turn = String(state.players[state.turn]?.id === p.id && !out);
-      node.dataset.out = String(out);
-      node.dataset.danger = String(!out && p.handCount / limit > 0.8);
-      node.querySelector('.name')!.textContent =
-        (p.eliminated ? '☠ ' : p.finished ? '★ ' : '') + p.name;
-      node.querySelector('.count')!.textContent = out
-        ? p.eliminated
-          ? 'out'
-          : 'finished'
-        : `${p.handCount} card${p.handCount === 1 ? '' : 's'}`;
+    const me = Math.max(0, state.players.findIndex((p) => p.id === state.viewer));
+    const n = state.players.length;
+    // Rotate so the viewer leads, then follow the direction of play.
+    const order = Array.from({ length: n }, (_, k) => {
+      const step = state.direction === 1 ? k : n - k;
+      return (me + step) % n;
     });
 
-    for (const [id, node] of this.seatNodes) {
+    const seen = new Set<string>();
+    order.forEach((idx, slot) => {
+      const p = state.players[idx]!;
+      seen.add(p.id);
+      let row = this.railRows.get(p.id);
+      if (!row) {
+        row = el('div', { class: 'row' }, [
+          el('span', { class: 'caret', text: '\u25b8' }),
+          el('span', { class: 'nm' }),
+          el('span', { class: 'mic' }, [el('i'), el('i'), el('i')]),
+          el('span', { class: 'ct' }),
+        ]);
+        this.railRows.set(p.id, row);
+      }
+      // Re-append in order rather than rebuilding: a row that survives can
+      // animate its opacity instead of flashing.
+      this.railBox!.append(row);
+      row.style.order = String(slot);
+
+      const out = p.eliminated || p.finished;
+      row.dataset.turn = String(state.players[state.turn]?.id === p.id && !out);
+      row.dataset.out = String(out);
+      row.dataset.you = String(p.id === state.viewer);
+      row.dataset.danger = String(!out && p.handCount / state.rules.handLimit > 0.8);
+
+      row.querySelector('.nm')!.textContent =
+        (p.eliminated ? '\u2620 ' : p.finished ? '\u2605 ' : '') +
+        (p.id === state.viewer ? 'You' : p.name);
+      row.querySelector('.ct')!.textContent = out ? (p.eliminated ? 'out' : 'done') : String(p.handCount);
+
+      const mic = row.querySelector('.mic') as HTMLElement;
+      const st = voice?.[p.id];
+      mic.dataset.v = st ?? 'none';
+      row.classList.toggle('talking', st === 'live');
+    });
+
+    for (const [id, row] of this.railRows) {
       if (!seen.has(id)) {
-        node.remove();
-        this.seatNodes.delete(id);
+        row.remove();
+        this.railRows.delete(id);
       }
     }
   }
@@ -1055,14 +1097,20 @@ export class Hud {
    */
   prompt(content: {
     label: string;
+    /** A quieter second line under the headline. */
+    sub?: string;
     kind?: 'passive' | 'decision';
+    /** 'danger' for something being done TO you, like a draw stack. */
+    tone?: 'danger';
     colors?: Color[];
     onPick?: (c: Color) => void;
     buttons?: { label: string; sub?: string; onClick: () => void }[];
   }): void {
     clear(this.promptBox);
     this.promptBox.classList.toggle('decision', content.kind === 'decision');
+    this.promptBox.classList.toggle('danger', content.tone === 'danger');
     this.promptBox.append(el('div', { class: 'label', text: content.label }));
+    if (content.sub) this.promptBox.append(el('p', { class: 'sub-line', text: content.sub }));
 
     if (content.colors) {
       this.promptBox.append(
@@ -1098,7 +1146,7 @@ export class Hud {
 
   clearPrompt(): void {
     clear(this.promptBox);
-    this.promptBox.classList.remove('decision');
+    this.promptBox.classList.remove('decision', 'danger');
   }
 
   /**
@@ -1119,18 +1167,33 @@ export class Hud {
   }
 
   /**
-   * The chat drawer.
+   * The chat ticker.
    *
-   * Closed by default and anchored off the right edge, because the felt is
-   * where the game is and a chat box parked over it covers an opponent's hand
-   * for the whole match whether or not anyone is talking. The tab carries an
-   * unread count so a closed drawer is never a silent one.
+   * Not a drawer. The old one was a panel that slid in from the right edge
+   * with a vertical tab and an unread badge - furniture to open, close and
+   * keep count for, sitting over an opponent's hand whenever it was open.
+   *
+   * This is how a game overlay does it: lines fade in at the bottom right,
+   * sit for TICKER_LIFE_MS, and fade out. Nothing to open, so nothing can be
+   * unread; the transcript is always the last few things said. The rule
+   * underneath IS the input - press T and it lights up.
+   *
+   * Voice shares the same rule: push-to-talk on V, with the level meter for
+   * everyone else living on the turn-order rail beside their name. One
+   * cluster in one corner carries both channels.
    */
-  enableChat(onSend: (text: string) => void, onTyping?: (typing: boolean) => void): void {
+  enableChat(
+    onSend: (text: string) => void,
+    onTyping?: (typing: boolean) => void,
+    voice?: {
+      onTalk: (talking: boolean) => void;
+      onToggleMute: () => void;
+      available: boolean;
+    },
+  ): void {
     if (this.chatBox) return;
 
-    const messages = el('div', { class: 'messages' });
-    const typing = el('div', { class: 'typing' });
+    const lines = el('div', { class: 'lines' });
 
     /*
      * Tell the table you are typing, and stop telling them when you stop.
@@ -1158,85 +1221,140 @@ export class Hud {
 
     const input = el('input', {
       type: 'text',
-      placeholder: 'Say something…',
+      class: 'say',
+      placeholder: 'Say something\u2026',
       maxlength: 200,
       onInput: (e) => signal(!!(e.target as HTMLInputElement).value),
       onKeydown: (e) => {
         const ev = e as KeyboardEvent;
-        if (ev.key === 'Escape') return this.toggleChat(false);
+        // Keys typed into the field are for the field, never for the table.
+        ev.stopPropagation();
+        if (ev.key === 'Escape') {
+          signal(false);
+          (ev.target as HTMLInputElement).blur();
+          return;
+        }
         if (ev.key !== 'Enter') return;
         const field = ev.target as HTMLInputElement;
         const value = field.value.trim();
-        if (!value) return;
-        onSend(value);
+        if (value) onSend(value);
         field.value = '';
         signal(false);
+        field.blur();
       },
-    });
+      onBlur: () => this.chatBox?.classList.remove('typing'),
+      onFocus: () => this.chatBox?.classList.add('typing'),
+    }) as HTMLInputElement;
 
-    this.chatBox = el('div', { class: 'chat' }, [
-      el('div', { class: 'chat-head' }, [
-        el('h3', { text: 'Table talk' }),
-        el('button', { text: 'Close', 'aria-label': 'Close chat', onClick: () => this.toggleChat(false) }),
-      ]),
-      messages,
-      typing,
+    const ptt = el('button', { class: 'ptt', 'aria-label': 'Hold to talk' }, [
+      el('span', { class: 'mic' }, [el('i'), el('i'), el('i')]),
+      el('span', { class: 'ptt-label', text: 'Hold V' }),
+    ]);
+
+    const bar = el('div', { class: 'bar' }, [
+      voice?.available ? ptt : null,
       input,
-    ]);
+    ].filter(Boolean) as Node[]);
 
-    this.chatTab = el('button', { class: 'chat-tab', onClick: () => this.toggleChat() }, [
-      document.createTextNode('Chat'),
-    ]);
+    this.chatBox = el('div', { class: 'ticker' }, [lines, bar]);
+    this.root.append(this.chatBox);
+    this.chatInput = input;
 
-    this.root.append(this.chatBox, this.chatTab);
-    this.chatInput = input as HTMLInputElement;
+    if (!voice?.available) return;
+
+    /*
+     * Push to talk, mouse or key.
+     *
+     * Held rather than toggled by default: an open microphone at a card table
+     * is four people's kitchens. A tap of M still toggles mute for anyone who
+     * would rather leave it open.
+     */
+    const talk = (on: boolean) => {
+      if (on === this.talking) return;
+      this.talking = on;
+      ptt.dataset.live = String(on);
+      (ptt.querySelector('.mic') as HTMLElement).dataset.v = on ? 'live' : 'on';
+      voice.onTalk(on);
+    };
+    ptt.addEventListener('pointerdown', () => talk(true));
+    ptt.addEventListener('pointerup', () => talk(false));
+    ptt.addEventListener('pointerleave', () => talk(false));
+    this.pushToTalk = talk;
+    this.toggleMute = voice.onToggleMute;
   }
 
-  /** Open or close the drawer. Omit `open` to flip it. */
-  toggleChat(open?: boolean): void {
-    if (!this.chatBox) return;
-    const next = open ?? !this.chatBox.classList.contains('open');
-    this.chatBox.classList.toggle('open', next);
-    if (next) {
-      this.chatSeen = this.chatCount;
-      this.renderUnread();
-      this.chatInput?.focus();
-    }
+  /**
+   * Table keys, live only while the HUD is up.
+   *
+   * T opens the line, V holds the microphone, M toggles mute. Everything is
+   * ignored while the text field has focus, so typing "victory" does not
+   * broadcast three seconds of you typing it.
+   */
+  bindKeys(): () => void {
+    const typing = () => document.activeElement === this.chatInput;
+
+    const down = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || typing()) return;
+      const k = e.key.toLowerCase();
+      if (k === 't') {
+        e.preventDefault();
+        this.chatInput?.focus();
+      } else if (k === 'v' && !e.repeat) {
+        this.pushToTalk?.(true);
+      } else if (k === 'm') {
+        this.toggleMute?.();
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === 'v') this.pushToTalk?.(false);
+    };
+    // Releasing V outside the window would otherwise leave the mic open.
+    const blur = () => this.pushToTalk?.(false);
+
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+    };
   }
 
-  private renderUnread(): void {
-    if (!this.chatTab) return;
-    const n = Math.max(0, this.chatCount - this.chatSeen);
-    const badge = this.chatTab.querySelector('.unread');
-    if (n === 0) {
-      badge?.remove();
-      return;
-    }
-    if (badge) badge.textContent = String(n);
-    else this.chatTab.append(el('span', { class: 'unread', text: String(n) }));
+  /** Reflect the local microphone: muted, open, or off. */
+  micState(state: VoiceState): void {
+    const mic = this.chatBox?.querySelector('.ptt .mic') as HTMLElement | null;
+    if (mic) mic.dataset.v = state;
+    const label = this.chatBox?.querySelector('.ptt-label');
+    if (label) label.textContent = state === 'muted' ? 'Muted' : 'Hold V';
+    (this.chatBox?.querySelector('.ptt') as HTMLElement | null)?.setAttribute(
+      'data-muted',
+      String(state === 'muted'),
+    );
   }
 
   chat(messages: ChatMessage[]): void {
-    const box = this.chatBox?.querySelector('.messages');
+    const box = this.chatBox?.querySelector('.lines') as HTMLElement | null;
     if (!box) return;
 
-    this.chatCount = messages.length;
-    if (this.chatBox?.classList.contains('open')) this.chatSeen = this.chatCount;
-    this.renderUnread();
-
-    clear(box as HTMLElement);
-    if (messages.length === 0) {
-      (box as HTMLElement).append(
-        el('div', { class: 'empty', text: 'Nobody has said anything yet.' }),
-      );
-      return;
+    /*
+     * Append only what is new.
+     *
+     * Rebuilding the list every state change - which is every card played -
+     * restarted each line's fade-in, so an old message flashed back to full
+     * brightness every time anybody did anything.
+     */
+    for (const m of messages.slice(this.chatSeen)) {
+      const row = el('div', { class: 'msg' }, [
+        el('span', { class: 'who', text: m.name }),
+        document.createTextNode(m.text),
+      ]);
+      box.append(row);
+      window.setTimeout(() => row.classList.add('leaving'), TICKER_LIFE_MS);
+      window.setTimeout(() => row.remove(), TICKER_LIFE_MS + 1200);
+      while (box.children.length > TICKER_LINES) box.firstElementChild?.remove();
     }
-    for (const m of messages.slice(-40)) {
-      (box as HTMLElement).append(
-        el('div', {}, [el('span', { class: 'who', text: m.name }), m.text]),
-      );
-    }
-    box.scrollTop = box.scrollHeight;
+    this.chatSeen = messages.length;
   }
 
   /**
@@ -1272,9 +1390,13 @@ export class Hud {
 
   /** Who is mid-sentence, by name. Empty clears the line. */
   typing(names: string[]): void {
-    const line = this.chatBox?.querySelector('.typing');
-    if (!line) return;
-    clear(line as HTMLElement);
+    if (!this.chatBox) return;
+    let line = this.chatBox.querySelector('.typing') as HTMLElement | null;
+    if (!line) {
+      line = el('div', { class: 'typing' });
+      this.chatBox.insertBefore(line, this.chatBox.querySelector('.bar'));
+    }
+    clear(line);
     if (names.length === 0) return;
     const who =
       names.length === 1
@@ -1282,7 +1404,7 @@ export class Hud {
         : names.length === 2
           ? `${names[0]} and ${names[1]} are typing`
           : `${names.length} people are typing`;
-    (line as HTMLElement).append(
+    line.append(
       el('span', { text: who }),
       el('span', { class: 'dots' }, [el('i'), el('i'), el('i')]),
     );

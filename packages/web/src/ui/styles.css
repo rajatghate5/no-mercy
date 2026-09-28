@@ -655,35 +655,135 @@ h2 {
 
 /* ---------- in-game HUD ---------- */
 /*
- * A name on the felt, not a badge above it.
+ * The turn order rail.
  *
- * Every seat was a bordered plate, and with four of them ringing the table
- * plus a row of chips along the top, the screen was more boxes than game. The
- * type is legible on baize without a backing; a shadow does the work the fill
- * was doing. What survives is the ONE state worth a box - whose turn it is.
+ * What was here before: four names floating on the felt at their 3D seat
+ * positions, with `.seat[data-turn='true'] .name { color: var(--accent) }` as
+ * the marker for whose turn it was. After the palette pass --accent is bone
+ * (#f2ece0) and --ink is bone (#e9e3d5), so the "lit" name and every idle
+ * name computed to the same rgb(233,227,213). The turn was invisible - not
+ * subtle, absent.
+ *
+ * The accent rule still stands: nothing may be added under 55 degrees from
+ * the four suit hues unless its chroma is under 10%. So the marker is built
+ * from channels a card cannot occupy - BRIGHTNESS, WEIGHT and POSITION. Idle
+ * rows drop to 42%, the active row goes to full white-bone with a caret and a
+ * rule down the edge nearest the felt.
+ *
+ * Ordered from you, in the direction of play, so reading down the rail is
+ * reading the order the turn will actually arrive in.
  */
-.seat {
+.rail {
   position: absolute;
-  transform: translate(-50%, -50%);
-  background: none;
-  border: 0;
-  border-radius: 0;
+  top: 58px;
+  right: 14px;
+  width: 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rail-head {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #6f6754;
+  text-align: right;
+  padding: 0 10px 7px;
+  border-bottom: 1px solid #ffffff14;
+  margin-bottom: 4px;
+  order: -1;
+}
+
+.rail .row {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: baseline;
+  gap: 8px;
   padding: 5px 10px;
-  text-align: center;
-  min-width: 96px;
+  border-right: 2px solid transparent;
   text-shadow: 0 1px 6px #000, 0 1px 2px #000;
-  transition: color 200ms ease, opacity 200ms ease;
+  opacity: 0.42;
+  transition: opacity 240ms ease, background 240ms ease, border-color 200ms ease;
 }
-.seat .name { font-size: 13px; font-weight: 600; white-space: nowrap; }
-.seat .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-/* Lit, like the card you can play: the turn is light falling on a name. */
-.seat[data-turn='true'] .name { color: var(--accent); }
-.seat[data-turn='true'] {
-  background: radial-gradient(ellipse 70% 130% at 50% 50%, #c9a2271f, transparent 72%);
+.rail .row .nm { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.rail .row .ct {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-right: auto;
 }
-.seat[data-danger='true'] .count { color: #dd8464; }
-.seat[data-out='true'] { opacity: 0.4; }
-.seat[data-out='true'] .name { text-decoration: line-through; }
+/* Mirrored, because on a right-hand rail a ▸ would point off the screen. */
+.rail .row .caret { width: 9px; font-size: 10px; opacity: 0; transform: scaleX(-1); }
+
+.rail .row[data-turn='true'] {
+  opacity: 1;
+  background: #ffffff0a;
+  border-right-color: var(--bone);
+}
+.rail .row[data-turn='true'] .nm { color: #fffaf0; }
+.rail .row[data-turn='true'] .caret { opacity: 1; color: var(--bone); }
+
+/* Your own row stays legible off-turn: it is the one you look for. */
+.rail .row[data-you='true']:not([data-turn='true']) { opacity: 0.62; }
+/* Somebody mid-sentence is never dimmed to the back of the room. */
+.rail .row.talking:not([data-turn='true']) { opacity: 0.78; }
+
+.rail .row[data-danger='true'] .ct { color: #dd8464; }
+.rail .row[data-out='true'] { opacity: 0.3; }
+.rail .row[data-out='true'] .nm { text-decoration: line-through; }
+
+/*
+ * The level meter.
+ *
+ * Voice gets MOTION, because the turn already owns brightness and position.
+ * Two separate channels means somebody talking out of turn can never be
+ * mistaken for somebody whose turn it is - and no new hue, so nothing here
+ * can collide with a suit colour either.
+ */
+.mic {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 11px;
+  width: 13px;
+  flex: none;
+  position: relative;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.mic i {
+  display: block;
+  width: 2.5px;
+  height: 3px;
+  border-radius: 1px;
+  background: var(--muted);
+}
+.mic[data-v='none'] { opacity: 0; }
+.mic[data-v='on'] { opacity: 0.5; }
+.mic[data-v='muted'] { opacity: 0.34; }
+.mic[data-v='muted'] i { background: #6f6754; }
+/* One stroke through the pips: the universal "closed" mark, no colour needed. */
+.mic[data-v='muted']::after {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 5px;
+  width: 15px;
+  height: 1px;
+  background: #6f6754;
+  transform: rotate(-38deg);
+}
+.mic[data-v='live'] { opacity: 1; }
+.mic[data-v='live'] i { background: #fffaf0; animation: vu 620ms ease-in-out infinite; }
+.mic[data-v='live'] i:nth-child(2) { animation-delay: 130ms; }
+.mic[data-v='live'] i:nth-child(3) { animation-delay: 260ms; }
+
+@keyframes vu {
+  0%, 100% { height: 3px; }
+  50%      { height: 11px; }
+}
 
 .topbar {
   position: absolute;
@@ -997,113 +1097,123 @@ h2 {
 .hand-scroll button:hover:not(:disabled) { background: none; color: #e8c14a; }
 .hand-scroll button:disabled { opacity: 0.15; }
 
-/* ---------- chat drawer ---------- */
+/* ---------- chat + voice ticker ---------- */
 
 /*
- * A drawer, not a floating box.
+ * A ticker, not a drawer.
  *
- * The old chat sat loose over the left of the table with no way to put it
- * away, so it covered an opponent's hand for the whole game whether or not
- * anyone was talking. This slides in from the right, off the felt entirely,
- * and closes.
+ * The old chat was a panel that slid in from the right edge behind a vertical
+ * tab, with an unread badge to keep count - furniture to open, close and
+ * manage, which then sat over an opponent's hand for as long as it was open.
+ *
+ * This is how a game overlay does it. Lines fade in at the bottom right and
+ * fade out again; nothing opens, so nothing can be unread. The rule beneath
+ * them IS the input, and it is also where push-to-talk lives, so one cluster
+ * in one corner carries both the typed and the spoken channel.
  */
-.chat-tab {
+.ticker {
   position: absolute;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  writing-mode: vertical-rl;
-  padding: 16px 7px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted);
-  background: linear-gradient(180deg, #16150f, var(--panel));
-  border: 1px solid var(--line);
-  border-right: 0;
-  border-radius: 2px 0 0 2px;
-  cursor: pointer;
-}
-.chat-tab:hover { color: var(--ink); border-color: var(--brass-dim); }
-.chat-tab .unread {
-  writing-mode: horizontal-tb;
-  background: var(--brass);
-  color: #14110a;
-  border-radius: 2px;
-  min-width: 17px;
-  padding: 1px 5px;
-  font-size: 10.5px;
-  text-align: center;
-}
-
-.chat {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(320px, 82vw);
+  right: 14px;
+  bottom: 12px;
+  width: 292px;
+  max-width: 44vw;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px 14px;
-  background: linear-gradient(180deg, #16150f, var(--panel));
-  border-left: 1px solid var(--line);
-  box-shadow: -28px 0 70px -30px #000;
-  transform: translateX(100%);
-  transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  gap: 3px;
+  text-align: right;
+  pointer-events: none;
 }
-.chat.open { transform: translateX(0); }
-.chat[hidden] { display: none; }
 
-.chat-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
-}
-.chat-head h3 {
-  margin: 0;
-  font-family: var(--ui);
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--muted);
-}
-.chat-head button { padding: 4px 9px; font-size: 12px; line-height: 1; }
-
-.chat .messages {
-  flex: 1;
+.ticker .lines {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  overflow-y: auto;
-  font-size: 13px;
-  line-height: 1.45;
-  /* Newest at the bottom, the way every chat anyone has used works. */
+  gap: 3px;
   justify-content: flex-end;
+  min-height: 56px;
 }
-/* Said out loud across a table, not posted. No bubble, no box - the name in
-   brass and the words under it, which is all a transcript has ever needed. */
-.chat .messages > div {
-  background: none;
-  border: 0;
-  border-radius: 0;
-  padding: 2px 0;
+
+.ticker .msg {
+  font-size: 12.5px;
+  line-height: 1.38;
   color: var(--ink);
+  text-shadow: 0 1px 5px #000, 0 1px 2px #000;
+  animation: ticker-in 320ms ease both;
+  transition: opacity 1s ease;
 }
-.chat .messages .who {
-  display: block;
+/* Said out loud across a table, not posted. No bubble, no box. */
+.ticker .msg .who {
   color: var(--brass);
   font-weight: 600;
   font-size: 11px;
   letter-spacing: 0.04em;
-  margin-bottom: 1px;
+  margin-right: 7px;
 }
-.chat .messages > div.empty { color: var(--muted); font-size: 12.5px; border: 0; background: none; padding: 0; }
+.ticker .msg.leaving { opacity: 0.22; }
+
+@keyframes ticker-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.ticker .bar {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 9px;
+  border-top: 1px solid #ffffff2e;
+  padding-top: 7px;
+  pointer-events: auto;
+  transition: border-color 200ms ease;
+}
+.ticker.typing .bar { border-top: 1.5px solid var(--bone); }
+
+/* The field is the rule until you are using it: no box, no placeholder box. */
+.ticker .say {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  text-align: right;
+  text-shadow: 0 1px 5px #000;
+}
+.ticker .say::placeholder { color: #6f6754; }
+.ticker .say:focus { outline: none; }
+.ticker .say:focus::placeholder { color: transparent; }
+
+/*
+ * Push to talk.
+ *
+ * Held rather than latched: an open microphone at a card table is four
+ * people's kitchens. M still toggles a mute for anyone who prefers it open.
+ */
+.ticker .ptt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 3px 8px 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: #00000059;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease;
+}
+.ticker .ptt:hover { color: var(--ink); border-color: var(--brass-dim); }
+.ticker .ptt[data-live="true"] { color: #fffaf0; border-color: var(--bone); }
+.ticker .ptt[data-muted="true"] { color: #6f6754; }
+.ticker .ptt .mic { opacity: 0.7; }
 
 /*
  * "Ada is typing."
@@ -1113,12 +1223,14 @@ h2 {
  */
 .typing {
   display: flex;
+  flex-direction: row-reverse;
   align-items: center;
   gap: 8px;
-  min-height: 17px;
-  font-size: 12px;
+  min-height: 15px;
+  font-size: 11.5px;
   color: var(--muted);
   font-style: italic;
+  text-shadow: 0 1px 5px #000;
 }
 .typing .dots { display: inline-flex; gap: 3px; }
 .typing .dots i {
@@ -1138,7 +1250,26 @@ h2 {
 
 @media (prefers-reduced-motion: reduce) {
   .typing .dots i { animation: none; opacity: 0.8; }
-  .chat { transition: none; }
+  .ticker .msg { animation: none; }
+  .mic[data-v="live"] i { animation: none; height: 11px; }
+}
+
+/*
+ * A draw stack is something being done TO you, so the plate that carries it
+ * is struck differently from the colour picker: a red top rule and a warmer
+ * ground. Same geometry, so a decision always lands in the same place.
+ */
+.prompt.decision.danger {
+  border-top: 2px solid var(--danger);
+  border-color: #5a2a22;
+  background: linear-gradient(180deg, #1b1510, #120f0b);
+}
+.prompt .sub-line {
+  margin: -2px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  max-width: 34ch;
+  text-align: center;
 }
 
 /* ---------- advanced host settings ---------- */
@@ -1301,11 +1432,26 @@ button.toggle.on {
      stops it wrapping down into the prompt. */
   .chip.secondary { display: none; }
 
-  /* Compact seat chips, or they reach the middle of the table and cover the
-     draw and discard piles. */
-  .seat { min-width: 0; padding: 5px 8px; border-radius: 3px; }
-  .seat .name { font-size: 11.5px; }
-  .seat .count { font-size: 10.5px; }
+  /*
+   * The rail narrows rather than moving. It is the only place the turn is
+   * shown, so it has to survive a phone - and because it is anchored to the
+   * edge instead of projected from a 3D seat, narrowing is all it needs.
+   */
+  .rail { width: 128px; top: 50px; right: 8px; }
+  .rail .row { padding: 4px 7px; gap: 6px; }
+  .rail .row .nm { font-size: 11.5px; }
+  .rail .row .ct { font-size: 10.5px; }
+  .rail-head { padding: 0 7px 6px; }
+
+  /*
+   * The ticker clears the rail above it and the hand beside it.
+   *
+   * Lines drop to two and the input keeps its full width: a chat you cannot
+   * type into is worse than a chat with a short scrollback.
+   */
+  .ticker { width: auto; left: 8px; right: 8px; max-width: none; bottom: 8px; }
+  .ticker .lines { min-height: 0; max-height: 34px; overflow: hidden; }
+  .ticker .msg { font-size: 11.5px; }
 
   .prompt { top: 96px; gap: 7px; }
   .prompt .label { padding: 7px 11px; font-size: 12.5px; }

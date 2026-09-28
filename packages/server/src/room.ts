@@ -29,6 +29,8 @@ import {
   type LobbyPlayer,
   type RoomSettings,
   type ServerMessage,
+  type VoicePresence,
+  type VoiceSignal,
 } from '@mercy/protocol';
 
 export interface Seat {
@@ -62,6 +64,8 @@ export class Room {
   private readonly sends = new Map<string, Send>();
   private readonly memories: Record<string, BotMemory> = {};
   readonly chat: ChatMessage[] = [];
+  /** Who is in voice, and whether their mic is open. Seat id -> presence. */
+  private readonly voice = new Map<string, VoicePresence>();
 
   state: GameState | null = null;
   private recorder: ReplayRecorder | null = null;
@@ -112,6 +116,9 @@ export class Room {
   detach(id: string) {
     this.sends.delete(id);
     this.spectators.delete(id);
+    // A dropped socket cannot answer a handshake, so it must leave voice too,
+    // or every other client keeps a dead peer connection open for them.
+    this.clearVoice(id);
     const seat = this.seats.find((s) => s.id === id);
     // Keep the seat so the player can resume; just mark them away.
     if (seat) seat.connected = false;
@@ -358,6 +365,44 @@ export class Room {
    */
   postTyping(from: string, name: string, typing: boolean) {
     this.broadcast({ t: 'typing', player: from, name, typing });
+  }
+
+  /**
+   * Relay one leg of a WebRTC handshake to a single seat.
+   *
+   * The server is a post box, not a participant: it never parses the SDP and
+   * never joins the call. The only thing it enforces is that both ends are in
+   * THIS room, which is what stops a signal being addressed at a stranger.
+   */
+  postVoiceSignal(from: string, signal: VoiceSignal): boolean {
+    if (signal.peer === from) return false;
+    const send = this.sends.get(signal.peer);
+    if (!send) return false;
+    send({ t: 'voice', from, signal });
+    return true;
+  }
+
+  /**
+   * Record who is in voice and whether their mic is open, then broadcast the
+   * WHOLE roster rather than a delta.
+   *
+   * A delta means a client that missed one message is wrong about somebody's
+   * mic until they toggle it again. The roster is small enough that sending
+   * all of it is cheaper than being subtly wrong.
+   */
+  setVoiceState(player: string, joined: boolean, muted: boolean) {
+    if (joined) this.voice.set(player, { player, joined, muted });
+    else this.voice.delete(player);
+    this.broadcastVoice();
+  }
+
+  /** Drop a player from voice - on disconnect, so nobody lingers as connected. */
+  clearVoice(player: string) {
+    if (this.voice.delete(player)) this.broadcastVoice();
+  }
+
+  private broadcastVoice() {
+    this.broadcast({ t: 'voiceRoster', players: [...this.voice.values()] });
   }
 
   postChat(from: string, name: string, text: string) {

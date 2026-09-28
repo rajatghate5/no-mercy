@@ -37,7 +37,16 @@ import {
  */
 const DEAL_MS = 560;
 const MOVE_MS = 450;
-const PLAY_MS = 700;
+/*
+ * A card thrown across the table.
+ *
+ * The duration was never the problem - the CURVE was. This ran on outQuint,
+ * which has covered 83% of the distance at 30% of the time: the card snapped
+ * to the pile and then crept the last few pixels, which reads as fast however
+ * long you make it. A thrown card accelerates first, so the throw is eased in
+ * AND out, and given enough time that the acceleration is legible.
+ */
+const PLAY_MS = 1100;
 /** A card already on the table shuffling along to make room. */
 const SETTLE_MS = 290;
 
@@ -433,7 +442,7 @@ export class TableView {
     this.moveTo(key, held.mesh, discardTransform(depth, hashId(top.id)), {
       duration: PLAY_MS,
       arc: 0.9,
-      easing: ease.outQuint,
+      easing: ease.inOutCubic,
     });
 
     // Keep a few older cards underneath so the pile has visible depth.

@@ -17,6 +17,8 @@ import {
   type LobbyPlayer,
   type RoomSettings,
   type ServerMessage,
+  type VoicePresence,
+  type VoiceSignal,
 } from '@mercy/protocol';
 import type { LogEntry } from './local.js';
 import { describeEvent } from './narrate.js';
@@ -53,6 +55,12 @@ export class NetworkGame {
    * socket or a closed tab, and without a deadline the indicator would sit
    * there naming someone who left ten minutes ago.
    */
+  /** The room's voice roster, as last broadcast by the server. */
+  voiceRoster: VoicePresence[] = [];
+  /** Set by whoever owns the VoiceChat instance. */
+  onVoiceSignal: ((from: string, signal: VoiceSignal) => void) | null = null;
+  onVoiceRoster: ((players: VoicePresence[]) => void) | null = null;
+
   private typingUntil = new Map<string, { name: string; until: number }>();
   private typingSweep: number | undefined;
   readonly log: LogEntry[] = [];
@@ -163,6 +171,20 @@ export class NetworkGame {
         this.typingUntil.delete(msg.message.from);
         if (this.chat.length > 100) this.chat.shift();
         break;
+      /*
+       * Voice. The controller relays and stores; it never owns a peer
+       * connection, because VoiceChat has to survive a socket reconnect and
+       * the controller does not.
+       */
+      case 'voice':
+        this.onVoiceSignal?.(msg.from, msg.signal);
+        break;
+
+      case 'voiceRoster':
+        this.voiceRoster = msg.players;
+        this.onVoiceRoster?.(msg.players);
+        break;
+
       case 'ended':
         this.winner = msg.winner;
         this.status = 'ended';
@@ -248,6 +270,16 @@ export class NetworkGame {
 
   setTyping(typing: boolean) {
     this.send({ t: 'typing', typing });
+  }
+
+  /** Send one leg of a WebRTC handshake to another seat. */
+  sendVoiceSignal(signal: VoiceSignal) {
+    this.send({ t: 'voice', signal });
+  }
+
+  /** Tell the room whether we are in voice and whether the mic is open. */
+  announceVoice(joined: boolean, muted: boolean) {
+    this.send({ t: 'voiceState', joined, muted });
   }
 
   say(text: string) {

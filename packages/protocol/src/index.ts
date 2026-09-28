@@ -174,6 +174,47 @@ export interface ChatMessage {
   at: number;
 }
 
+/**
+ * One leg of a WebRTC handshake, relayed between two players in a room.
+ *
+ * The server never looks inside `sdp`. It checks only that the sender is in
+ * the room and the target is too, then forwards it - which is the whole of
+ * what a signalling server does. Audio itself is peer to peer and never
+ * touches the server at all, which is also why voice costs nothing to run.
+ */
+export interface VoiceSignal {
+  /** Seat id of the other end. */
+  readonly peer: string;
+  readonly kind: 'offer' | 'answer' | 'ice';
+  /** Opaque SDP or ICE candidate. Relayed verbatim, never parsed. */
+  readonly sdp: string;
+}
+
+/** Whether a player is in voice at all, and whether their mic is open. */
+export interface VoicePresence {
+  readonly player: string;
+  readonly joined: boolean;
+  readonly muted: boolean;
+}
+
+/** Signalling payload cap. An SDP offer is a few KB; anything past this is abuse. */
+export const VOICE_SDP_MAX = 16000;
+
+/** Structural check on an untrusted signal. Shape only - the SDP stays opaque. */
+export function isVoiceSignal(v: unknown): v is VoiceSignal {
+  if (typeof v !== 'object' || v === null) return false;
+  const s = v as Partial<VoiceSignal>;
+  return (
+    typeof s.peer === 'string' &&
+    s.peer.length > 0 &&
+    s.peer.length <= 64 &&
+    (s.kind === 'offer' || s.kind === 'answer' || s.kind === 'ice') &&
+    typeof s.sdp === 'string' &&
+    s.sdp.length > 0 &&
+    s.sdp.length <= VOICE_SDP_MAX
+  );
+}
+
 // --- client -> server -------------------------------------------------------
 
 export type ClientMessage =
@@ -188,6 +229,10 @@ export type ClientMessage =
   | { t: 'chat'; text: string }
   /** Mid-sentence, or stopped. Fire-and-forget; never affects game state. */
   | { t: 'typing'; typing: boolean }
+  /** One leg of a WebRTC handshake, addressed at another seat in this room. */
+  | { t: 'voice'; signal: VoiceSignal }
+  /** Joining, leaving or muting voice. Broadcast so the rail can draw it. */
+  | { t: 'voiceState'; joined: boolean; muted: boolean }
   | { t: 'leave' };
 
 // --- server -> client -------------------------------------------------------
@@ -199,6 +244,10 @@ export type ServerMessage =
   | { t: 'state'; state: RedactedState; events: GameEvent[] }
   | { t: 'chat'; message: ChatMessage }
   | { t: 'typing'; player: string; name: string; typing: boolean }
+  /** A handshake leg from `from`, relayed unmodified. */
+  | { t: 'voice'; from: string; signal: VoiceSignal }
+  /** The room's whole voice roster. Sent on every change, so it cannot drift. */
+  | { t: 'voiceRoster'; players: VoicePresence[] }
   | { t: 'error'; code: ErrorCode; message: string }
   | { t: 'ended'; winner: string | null };
 
