@@ -980,7 +980,7 @@ export class Hud {
    * Listed in turn order from the viewer, so reading down the rail is reading
    * the order play will actually arrive in.
    */
-  rail(state: RedactedState, voice?: VoiceView): void {
+  rail(state: RedactedState, voice?: VoiceView, spectators = 0): void {
     if (!this.railBox) {
       this.railBox = el('div', { class: 'rail' }, [
         el('div', { class: 'rail-head', text: 'Turn order' }),
@@ -1038,6 +1038,23 @@ export class Hud {
         this.railRows.delete(id);
       }
     }
+
+    // Watchers, as a count. Naming them would be telling the table who is in
+    // the room, which a nickname on a join screen is not consent for.
+    let watchers = this.railBox.querySelector('.watchers') as HTMLElement | null;
+    if (spectators <= 0) {
+      watchers?.remove();
+      return;
+    }
+    if (!watchers) {
+      watchers = el('div', { class: 'watchers' });
+      this.railBox.append(watchers);
+    }
+    clear(watchers);
+    watchers.append(
+      el('b', { text: String(spectators) }),
+      document.createTextNode(spectators === 1 ? ' watching' : ' watching'),
+    );
   }
 
   chips(state: RedactedState): void {

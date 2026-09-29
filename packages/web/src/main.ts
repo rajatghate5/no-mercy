@@ -23,6 +23,7 @@ import { Sound } from './game/sound.js';
 import { DEFAULT_ROOM_SETTINGS } from '@mercy/protocol';
 import { resolveServer } from './game/serverUrl.js';
 import { Store } from './game/store.js';
+import { decidePrompt } from './game/prompt.js';
 import type { PlayableGame } from './game/types.js';
 import { warmCardArt } from './scene/cardArt.js';
 import { AttractScene } from './scene/attract.js';
@@ -382,7 +383,7 @@ function voiceView(): VoiceView | undefined {
 function refreshVoice() {
   const state = game?.view();
   if (!state || !hud) return;
-  hud.rail(state, voiceView());
+  hud.rail(state, voiceView(), game instanceof NetworkGame ? game.spectators : 0);
   hud.micState(voice?.selfState() ?? 'none');
   // The mesh only calls seats that are actually at the table.
   voice?.setSeats(state.players.filter((p) => !p.isBot).map((p) => p.id));
@@ -404,7 +405,7 @@ function refreshHud() {
   if (!g || !state || !hud) return;
 
   hud.chips(state);
-  hud.rail(state, voiceView());
+  hud.rail(state, voiceView(), g instanceof NetworkGame ? g.spectators : 0);
   hud.log(g.log);
   if (g.chat) {
     hud.chat(g.chat);
@@ -440,115 +441,108 @@ function refreshHud() {
 
   renderUnoShout(g, state);
 
-  if (g.isOver) return hud.clearPrompt();
-
-  if (g.spectator) {
-    const upName = state.players[state.turn]?.name ?? '';
-    return hud.prompt({ label: `Spectating — ${upName} to play` });
-  }
-
-  if (!g.waitingOnHuman()) {
-    const upName = state.players[state.turn]?.name ?? 'someone';
-    return hud.prompt({ label: `${upName}…` });
-  }
-
-  const phase = state.phase;
-
-  if (phase.type === 'chooseColor' || phase.type === 'chooseRouletteColor') {
-    return hud.prompt({
-      kind: 'decision',
-      label:
-        phase.type === 'chooseColor'
-          ? 'Pick a colour'
-          : 'Roulette — name the colour you must draw to',
-      colors: [...COLORS],
-      onPick: (c: Color) =>
-        g.apply(
-          phase.type === 'chooseColor'
-            ? { type: 'chooseColor', player: g.youId, color: c }
-            : { type: 'chooseRouletteColor', player: g.youId, color: c },
-        ),
-    });
-  }
-
-  if (phase.type === 'chooseSwapTarget') {
-    const targets = state.players.filter(
-      (p) => p.id !== g.youId && !p.eliminated && !p.finished,
-    );
-    const mine = state.players.find((p) => p.id === g.youId)?.hand?.length ?? 0;
-    return hud.prompt({
-      kind: 'decision',
-      label: 'You played a 7 — take someone else\'s hand',
-      buttons: [
-        ...targets.map((t) => ({
-          label: t.name,
-          // The count is the whole decision, so it gets its own line rather
-          // than being tucked in brackets after the name.
-          sub: `${t.handCount} ${t.handCount === 1 ? 'card' : 'cards'}`,
-          onClick: () => g.apply({ type: 'chooseSwapTarget', player: g.youId, target: t.id }),
-        })),
-        // House rule. Off in the printed game, where a 7 obliges you to swap.
-        ...(state.rules.sevenMayDecline
-          ? [
-              {
-                label: 'Keep mine',
-                sub: `${mine} ${mine === 1 ? 'card' : 'cards'}`,
-                onClick: () => g.apply({ type: 'declineSwap', player: g.youId }),
-              },
-            ]
-          : []),
-      ],
-    });
-  }
-
-  /*
-   * A live draw stack is a DECISION, not a turn.
-   *
-   * It used to render as an ordinary turn: the prompt said "click a card to
-   * play it" while the stack rules made almost every card in your hand
-   * illegal, the penalty was a chip in the top strip fourth in a row of
-   * chips, and clicking a card did nothing at all - no shake, no sound, no
-   * line in the log. The rule was being enforced perfectly and the interface
-   * never said so, which reads as a broken game rather than a punishment.
-   *
-   * So it moves to the middle of the screen on the same plate the colour
-   * picker uses, names who hit you, and says what it costs.
-   */
-  if (state.pendingDraw > 0) {
-    const stackers = playableFor(state);
-    const hitBy = state.players.find((p) => p.id === lastAggressor(g, state));
-    const who = hitBy && hitBy.id !== g.youId ? hitBy.name : 'Someone';
-    return hud.prompt({
-      kind: 'decision',
-      tone: 'danger',
-      label: `${who} hit you with +${state.pendingDraw}`,
-      sub:
-        stackers.length > 0
-          ? `Play a +${state.stackValue} or bigger to pass it on — or take it.`
-          : `Nothing in your hand is a +${state.stackValue} or bigger. You have to eat it.`,
-      buttons: [
-        {
-          label: `Take ${state.pendingDraw} cards`,
-          onClick: () => g.apply({ type: 'takeStack', player: g.youId }),
-        },
-      ],
-    });
-  }
-
-  const narrow = window.innerWidth < 560;
-  hud.prompt({
-    label: narrow
-      ? isTouch
-        ? 'Your turn — tap a card, tap again to play'
-        : 'Your turn'
-      : 'Your turn — click a card to play it',
-    buttons: [
-      {
-        label: 'Draw a card',
-        onClick: () => g.apply({ type: 'draw', player: g.youId }),
-      },
-    ],
+  const spec = decidePrompt(state, {
+    youId: g.youId,
+    isOver: g.isOver,
+    spectator: !!g.spectator,
+    waiting: g.waitingOnHuman(),
+    aggressor: lastAggressor(g, state),
   });
+
+  switch (spec.kind) {
+    case 'none':
+      return hud.clearPrompt();
+
+    case 'waiting':
+      return hud.prompt({
+        label: spec.spectating ? `Spectating — ${spec.who} to play` : `${spec.who}…`,
+      });
+
+    case 'color':
+      return hud.prompt({
+        kind: 'decision',
+        label: spec.label,
+        colors: [...COLORS],
+        onPick: (c: Color) =>
+          g.apply(
+            spec.action === 'chooseColor'
+              ? { type: 'chooseColor', player: g.youId, color: c }
+              : { type: 'chooseRouletteColor', player: g.youId, color: c },
+          ),
+      });
+
+    case 'swap':
+      return hud.prompt({
+        kind: 'decision',
+        label: 'You played a 7 — take someone else\'s hand',
+        buttons: [
+          ...spec.targets.map((t) => ({
+            label: t.name,
+            // The count is the whole decision, so it gets its own line rather
+            // than being tucked in brackets after the name.
+            sub: `${t.handCount} ${t.handCount === 1 ? 'card' : 'cards'}`,
+            onClick: () => g.apply({ type: 'chooseSwapTarget', player: g.youId, target: t.id }),
+          })),
+          // House rule. Off in the printed game, where a 7 obliges you to swap.
+          ...(spec.mayDecline
+            ? [
+                {
+                  label: 'Keep mine',
+                  sub: `${spec.ownHand} ${spec.ownHand === 1 ? 'card' : 'cards'}`,
+                  onClick: () => g.apply({ type: 'declineSwap', player: g.youId }),
+                },
+              ]
+            : []),
+        ],
+      });
+
+    /*
+     * A live draw stack is a DECISION, not a turn.
+     *
+     * It used to render as an ordinary turn: the prompt said "click a card to
+     * play it" while the stack rules made almost every card in your hand
+     * illegal, the penalty was a chip in the top strip fourth in a row of
+     * chips, and clicking a card did nothing at all. The rule was enforced
+     * perfectly and the interface never said so, which reads as a broken game
+     * rather than a punishment.
+     *
+     * There is deliberately no "Draw a card" button on this plate: while a
+     * stack is live the engine rejects a plain draw, so the button could only
+     * ever do nothing.
+     */
+    case 'stack':
+      return hud.prompt({
+        kind: 'decision',
+        tone: 'danger',
+        label: `${spec.by ?? 'You have been'} hit ${spec.by ? 'you ' : ''}with +${spec.total}`,
+        sub: spec.canStack
+          ? `Play a +${spec.need} or bigger to pass it on — or take all ${spec.total}.`
+          : `Nothing in your hand is a +${spec.need} or bigger. You have to take all ${spec.total}.`,
+        buttons: [
+          {
+            label: `Take ${spec.total} cards`,
+            onClick: () => g.apply({ type: 'takeStack', player: g.youId }),
+          },
+        ],
+      });
+
+    case 'turn': {
+      const narrow = window.innerWidth < 560;
+      return hud.prompt({
+        label: narrow
+          ? isTouch
+            ? 'Your turn — tap a card, tap again to play'
+            : 'Your turn'
+          : 'Your turn — click a card to play it',
+        buttons: [
+          {
+            label: 'Draw a card',
+            onClick: () => g.apply({ type: 'draw', player: g.youId }),
+          },
+        ],
+      });
+    }
+  }
 }
 
 /**
@@ -627,7 +621,21 @@ function finishGame(g: PlayableGame) {
   }
 
   const final = g.view();
-  const winnerName = final?.players.find((p) => p.id === g.winner)?.name ?? 'Nobody';
+  /*
+   * Fall back to the last player standing, never to "Nobody".
+   *
+   * The engine cannot produce a null winner - every ending resolves to a
+   * player, including the one where a stack eliminates the last two at once.
+   * So if the id does not resolve here, the fault is on this side of the
+   * wire, and the right answer is still whoever is left at the table rather
+   * than a screen telling four people that nobody won.
+   */
+  const standing = final?.players.filter((p) => !p.eliminated) ?? [];
+  const winnerName =
+    final?.players.find((p) => p.id === g.winner)?.name ??
+    (standing.length === 1 ? standing[0]!.name : null) ??
+    final?.players.find((p) => p.finished)?.name ??
+    'Nobody';
 
   /*
    * Read the reason off the final table rather than threading it through the

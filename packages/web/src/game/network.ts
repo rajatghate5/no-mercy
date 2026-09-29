@@ -55,6 +55,9 @@ export class NetworkGame {
    * socket or a closed tab, and without a deadline the indicator would sit
    * there naming someone who left ten minutes ago.
    */
+  /** How many people are watching without a seat. */
+  spectators = 0;
+
   /** The room's voice roster, as last broadcast by the server. */
   voiceRoster: VoicePresence[] = [];
   /** Set by whoever owns the VoiceChat instance. */
@@ -64,7 +67,14 @@ export class NetworkGame {
   private typingUntil = new Map<string, { name: string; until: number }>();
   private typingSweep: number | undefined;
   readonly log: LogEntry[] = [];
-  winner: string | null = null;
+  /**
+   * Winner as reported by the trailing `ended` message.
+   *
+   * Never read directly - see the getter. The server sends `state` (already
+   * carrying phase.gameOver) and only THEN `ended`, so by the time the table
+   * notices the game is over this is still null.
+   */
+  private endedWinner: string | null = null;
   lastEvents: GameEvent[] = [];
 
   constructor(private readonly opts: NetworkGameOptions) {
@@ -142,6 +152,7 @@ export class NetworkGame {
         break;
       case 'lobby':
         this.lobby = msg.players;
+        this.spectators = msg.spectators ?? 0;
         this.settings = msg.settings;
         this.isHost = msg.hostId === this.youId;
         break;
@@ -186,7 +197,7 @@ export class NetworkGame {
         break;
 
       case 'ended':
-        this.winner = msg.winner;
+        this.endedWinner = msg.winner;
         this.status = 'ended';
         break;
       case 'error':
@@ -232,6 +243,25 @@ export class NetworkGame {
 
   get isOver(): boolean {
     return this.status === 'ended';
+  }
+
+  /**
+   * Who won, read off the authoritative state.
+   *
+   * This used to be a field set by the `ended` message, and that was a race
+   * the client lost every single time. The server broadcasts the final STATE
+   * first and `ended` after it; the state alone flips `isOver`, so the table
+   * ran its game-over screen one message early, read a winner that was still
+   * null, and rendered "Nobody wins" - on every networked game, whoever won.
+   *
+   * The state already carries the answer, which is why LocalGame never had
+   * the bug. `ended` is now only a fallback for a game that ended without a
+   * final state reaching us, such as the room closing underneath us.
+   */
+  get winner(): string | null {
+    const phase = this.state?.phase;
+    if (phase?.type === 'gameOver') return phase.winner;
+    return this.endedWinner;
   }
 
   waitingOnHuman(): boolean {

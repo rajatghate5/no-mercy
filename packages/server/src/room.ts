@@ -142,6 +142,9 @@ export class Room {
       players: this.lobbyView(),
       settings: this.settings,
       hostId: this.hostId,
+      // Sent as a COUNT, not a list. Who is watching is not the table's
+      // business, and a spectator gave a nickname, not consent to be named.
+      spectators: this.spectators.size,
     });
   }
 

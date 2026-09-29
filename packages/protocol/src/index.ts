@@ -240,7 +240,15 @@ export type ClientMessage =
 export type ServerMessage =
   /** Sent once on join; `token` is the reconnect credential. */
   | { t: 'welcome'; code: string; you: string; token: string; isHost: boolean; spectator: boolean }
-  | { t: 'lobby'; code: string; players: LobbyPlayer[]; settings: RoomSettings; hostId: string }
+  | {
+      t: 'lobby';
+      code: string;
+      players: LobbyPlayer[];
+      settings: RoomSettings;
+      hostId: string;
+      /** How many people are watching without a seat. */
+      spectators: number;
+    }
   | { t: 'state'; state: RedactedState; events: GameEvent[] }
   | { t: 'chat'; message: ChatMessage }
   | { t: 'typing'; player: string; name: string; typing: boolean }

@@ -677,7 +677,7 @@ h2 {
   position: absolute;
   top: 58px;
   right: 14px;
-  width: 172px;
+  width: 190px;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -696,43 +696,82 @@ h2 {
   order: -1;
 }
 
+/*
+ * Colour the TEXT, never fade the row.
+ *
+ * The first cut dimmed idle rows with opacity: 0.42. That is a fine way to
+ * mark the turn and a terrible way to keep a name readable - bone at 42% over
+ * dark felt is roughly 2:1 against its background, so three of the four names
+ * simply could not be read. The turn is still unmistakable without it,
+ * because the ACTIVE row gains a caret, a rule, a lift in weight and a panel
+ * behind it. Four signals, none of which cost the idle names their contrast.
+ */
 .rail .row {
   display: flex;
   flex-direction: row-reverse;
   align-items: baseline;
-  gap: 8px;
-  padding: 5px 10px;
+  gap: 9px;
+  padding: 6px 10px;
   border-right: 2px solid transparent;
-  text-shadow: 0 1px 6px #000, 0 1px 2px #000;
-  opacity: 0.42;
-  transition: opacity 240ms ease, background 240ms ease, border-color 200ms ease;
+  text-shadow: 0 1px 6px #000, 0 1px 3px #000;
+  transition: background 240ms ease, border-color 200ms ease;
 }
-.rail .row .nm { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.rail .row .nm {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #c4bdab;
+}
 .rail .row .ct {
-  font-size: 11.5px;
-  color: var(--muted);
+  font-size: 12.5px;
+  color: #8d846d;
   font-variant-numeric: tabular-nums;
   margin-right: auto;
 }
 /* Mirrored, because on a right-hand rail a ▸ would point off the screen. */
-.rail .row .caret { width: 9px; font-size: 10px; opacity: 0; transform: scaleX(-1); }
+.rail .row .caret {
+  width: 9px;
+  font-size: 11px;
+  opacity: 0;
+  color: var(--bone);
+  transform: scaleX(-1);
+}
 
 .rail .row[data-turn='true'] {
-  opacity: 1;
-  background: #ffffff0a;
+  background: #ffffff12;
   border-right-color: var(--bone);
 }
-.rail .row[data-turn='true'] .nm { color: #fffaf0; }
-.rail .row[data-turn='true'] .caret { opacity: 1; color: var(--bone); }
+.rail .row[data-turn='true'] .nm { color: #fffaf0; font-weight: 700; }
+.rail .row[data-turn='true'] .ct { color: #b6ad96; }
+.rail .row[data-turn='true'] .caret { opacity: 1; }
 
-/* Your own row stays legible off-turn: it is the one you look for. */
-.rail .row[data-you='true']:not([data-turn='true']) { opacity: 0.62; }
-/* Somebody mid-sentence is never dimmed to the back of the room. */
-.rail .row.talking:not([data-turn='true']) { opacity: 0.78; }
+/* Your own row is the one you look for, so it keeps full strength. */
+.rail .row[data-you='true'] .nm { color: var(--ink); }
 
 .rail .row[data-danger='true'] .ct { color: #dd8464; }
-.rail .row[data-out='true'] { opacity: 0.3; }
-.rail .row[data-out='true'] .nm { text-decoration: line-through; }
+.rail .row[data-out='true'] .nm { color: #756c58; text-decoration: line-through; }
+.rail .row[data-out='true'] .ct { color: #756c58; }
+
+/*
+ * People watching, without naming them.
+ *
+ * A spectator typed a nickname to get in; that is not consent to be listed to
+ * the table. The count is what matters at the table anyway - that you are
+ * being watched, not by whom.
+ */
+.rail .watchers {
+  order: 99;
+  margin-top: 6px;
+  padding: 6px 10px 0;
+  border-top: 1px solid #ffffff14;
+  font-size: 11.5px;
+  color: #8d846d;
+  text-align: right;
+  text-shadow: 0 1px 6px #000;
+}
+.rail .watchers b { font-weight: 600; color: #c4bdab; font-variant-numeric: tabular-nums; }
 
 /*
  * The level meter.
@@ -1437,10 +1476,11 @@ button.toggle.on {
    * shown, so it has to survive a phone - and because it is anchored to the
    * edge instead of projected from a 3D seat, narrowing is all it needs.
    */
-  .rail { width: 128px; top: 50px; right: 8px; }
-  .rail .row { padding: 4px 7px; gap: 6px; }
-  .rail .row .nm { font-size: 11.5px; }
-  .rail .row .ct { font-size: 10.5px; }
+  .rail { width: 136px; top: 50px; right: 8px; }
+  .rail .row { padding: 5px 7px; gap: 7px; }
+  .rail .row .nm { font-size: 12.5px; }
+  .rail .row .ct { font-size: 11.5px; }
+  .rail .watchers { padding: 5px 7px 0; font-size: 10.5px; }
   .rail-head { padding: 0 7px 6px; }
 
   /*
