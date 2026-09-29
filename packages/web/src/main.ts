@@ -23,6 +23,7 @@ import { Sound } from './game/sound.js';
 import { DEFAULT_ROOM_SETTINGS } from '@mercy/protocol';
 import { resolveServer } from './game/serverUrl.js';
 import { Store } from './game/store.js';
+import { penalties } from './game/penalty.js';
 import { decidePrompt } from './game/prompt.js';
 import type { PlayableGame } from './game/types.js';
 import { warmCardArt } from './scene/cardArt.js';
@@ -355,6 +356,8 @@ function onStateChange() {
   view.update(state, g.lastEvents, aspect, handWidthBudget());
   cueSounds(g);
   refreshHud();
+  // After refreshHud, so the rail rows the badge attaches to already exist.
+  showPenalties(g, state);
 
   if (g.isOver) {
     stopBotLoop();
@@ -396,6 +399,27 @@ function cueSounds(g: PlayableGame) {
     else if (e.type === 'stackTaken' && e.count >= 6) sound.play('bigHit');
     else if (e.type === 'eliminated') sound.play('eliminate');
     else if (e.type === 'gameOver') sound.play(e.winner === g.youId ? 'win' : 'lose');
+  }
+}
+
+/**
+ * Make a penalty visible.
+ *
+ * The cards were always dealt - engine, server and wire all audited - but the
+ * table showed almost none of it, because the opponent fan renders at most
+ * twelve meshes keyed by index. Somebody already holding twelve who ate a +16
+ * got no new cards on screen at all, so a correctly applied penalty looked
+ * like nothing happening at all.
+ *
+ * Handled here rather than inside the fan because a penalty is an EVENT, not
+ * a hand size: it must be shown even when the hand it lands in is already
+ * bigger than the table can draw.
+ */
+function showPenalties(g: PlayableGame, state: RedactedState) {
+  const aspect = window.innerWidth / window.innerHeight;
+  for (const [player, count] of penalties(g.lastEvents)) {
+    view.penalty(state, player, count, aspect);
+    hud?.flashPenalty(player, count);
   }
 }
 

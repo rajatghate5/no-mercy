@@ -27,6 +27,8 @@ import { clear, el } from './dom.js';
 const TICKER_LIFE_MS = 12000;
 /** Lines kept on screen at once. Older ones drop off the top. */
 const TICKER_LINES = 4;
+/** How long "+16" stays against a name after a penalty lands. */
+const PENALTY_HOLD_MS = 2600;
 
 const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
 const BLURB: Record<Difficulty, string> = {
@@ -1336,6 +1338,24 @@ export class Hud {
       window.removeEventListener('keyup', up);
       window.removeEventListener('blur', blur);
     };
+  }
+
+  /**
+   * Flash what a penalty cost somebody, against their name.
+   *
+   * The cards flying to their seat say that something happened; this says how
+   * much. Sixteen cards arriving is hard to count and easy to disbelieve, and
+   * the running hand total moving from 12 to 28 is not a number anybody reads
+   * mid-animation.
+   */
+  flashPenalty(playerId: string, count: number): void {
+    const row = this.railRows.get(playerId);
+    if (!row || count < 1) return;
+    row.querySelector('.hit')?.remove();
+    const badge = el('span', { class: 'hit', text: `+${count}` });
+    row.append(badge);
+    window.setTimeout(() => badge.classList.add('going'), PENALTY_HOLD_MS);
+    window.setTimeout(() => badge.remove(), PENALTY_HOLD_MS + 600);
   }
 
   /** Reflect the local microphone: muted, open, or off. */

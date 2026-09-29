@@ -51,6 +51,16 @@ const PLAY_MS = 1100;
 const SETTLE_MS = 290;
 
 /*
+ * A penalty landing on somebody.
+ *
+ * Staggered rather than simultaneous: ten cards arriving at once is one
+ * event, ten cards arriving in sequence is a count you can feel.
+ */
+const BURST_MS = 620;
+const BURST_STAGGER = 85;
+const BURST_MAX = 12;
+
+/*
  * The hover is a SPRING, not a tween, and that is the whole point.
  *
  * A tween has a start. Sweeping a pointer along the fan changes every card's
@@ -149,6 +159,7 @@ export class TableView {
   reset(): void {
     this.animator.clear();
     this.follow.clear();
+    this.bursts.clear();
     for (const { mesh } of this.held.values()) this.root.remove(mesh);
     this.held.clear();
     this.lastHandIds = [];
@@ -168,7 +179,13 @@ export class TableView {
     key: string,
     mesh: CardObject,
     to: Transform,
-    opts: { duration?: number; delay?: number; arc?: number; easing?: typeof ease.outCubic } = {},
+    opts: {
+      duration?: number;
+      delay?: number;
+      arc?: number;
+      easing?: typeof ease.outCubic;
+      onDone?: () => void;
+    } = {},
   ): void {
     const from = {
       pos: [mesh.position.x, mesh.position.y, mesh.position.z] as [number, number, number],
@@ -200,6 +217,7 @@ export class TableView {
         );
         mesh.scale.setScalar(from.scale + (toScale - from.scale) * t);
       },
+      ...(opts.onDone ? { onComplete: opts.onDone } : {}),
     });
   }
 
@@ -216,6 +234,50 @@ export class TableView {
     const held: Held = { mesh };
     this.held.set(key, held);
     return held;
+  }
+
+  /**
+   * Cards flying to whoever just ate a penalty.
+   *
+   * Needed because the opponent fan LIES about size. It renders
+   * min(handCount, 12) meshes keyed by index, so a player already holding
+   * twelve cards who eats a +16 gets no new meshes at all and NOTHING moves -
+   * and a player on seven who eats a +10 sees five cards arrive, not ten. The
+   * penalty is applied correctly at every layer; it was simply invisible, so
+   * it read as though the cards had never been dealt.
+   *
+   * These meshes are transient and belong to no hand: they fly from the draw
+   * pile to the seat and retire themselves. Tracked here so update() does not
+   * cull them mid-flight.
+   */
+  private bursts = new Set<string>();
+  private burstSeq = 0;
+
+  penalty(state: RedactedState, playerId: string, count: number, aspect: number): void {
+    const idx = state.players.findIndex((p) => p.id === playerId);
+    if (idx < 0 || count < 1) return;
+
+    const angle = seatAngle(idx, this.viewerIndex, this.seatCount);
+    const to = seatSpawn(angle, playerId === state.viewer, seatSqueeze(aspect));
+    // Past a dozen the point is made; the number in the rail carries the rest.
+    const shown = Math.min(count, BURST_MAX);
+
+    for (let i = 0; i < shown; i++) {
+      const key = `burst-${this.burstSeq++}`;
+      this.bursts.add(key);
+      const held = this.ensure(key, null);
+      this.place(held.mesh, drawTransform(6));
+      this.moveTo(key, held.mesh, to, {
+        duration: BURST_MS,
+        delay: i * BURST_STAGGER,
+        arc: 1.15,
+        easing: ease.inOutCubic,
+        onDone: () => {
+          this.bursts.delete(key);
+          this.retire(key);
+        },
+      });
+    }
   }
 
   private retire(key: string): void {
@@ -262,6 +324,11 @@ export class TableView {
     this.layoutOpponents(state, aspect, live);
     this.layoutDiscard(state, live);
     this.layoutDrawPile(state, live);
+
+    // A burst belongs to no hand, so the ordinary cull would delete it the
+    // instant the next state arrived - which is always, because the state
+    // that triggered it has already landed.
+    for (const key of this.bursts) live.add(key);
 
     for (const key of [...this.held.keys()]) {
       if (!live.has(key)) this.retire(key);
