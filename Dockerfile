@@ -1,7 +1,7 @@
 # One image, one process: the Bun server hosts both the WebSocket game and the
 # built web client, so a deployment is a single URL.
 
-FROM oven/bun:1.4.2-alpine AS base
+FROM oven/bun:1.4.3-alpine AS base
 WORKDIR /app
 
 # --- deps -------------------------------------------------------------------
